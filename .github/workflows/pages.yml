@@ -13,7 +13,7 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -34,13 +34,14 @@ jobs:
           data = json.loads((root/'slides.json').read_text())
           (root/'audio').mkdir(exist_ok=True)
           async def generate():
-              sem = asyncio.Semaphore(4)
+              sem = asyncio.Semaphore(2)
               async def one(i, slide):
                   dest = root/f'audio/{i+1:02}.mp3'
                   if dest.exists() and dest.stat().st_size > 5000:
                       slide['duration'] = MP3(dest).info.length
                       return
                   async with sem:
+                      await asyncio.sleep(3)
                       for attempt in range(2):
                           try:
                               await edge_tts.Communicate(slide['narration'], 'ru-RU-SvetlanaNeural', rate='-5%').save(str(dest))
@@ -48,14 +49,23 @@ jobs:
                               break
                           except Exception as error:
                               print(f'Audio {i+1}, attempt {attempt+1}: {type(error).__name__}', flush=True)
+                              await asyncio.sleep(10)
                       if 'duration' not in slide:
-                          raise RuntimeError(f'Audio {i+1} was not generated')
+                          print(f'::warning::Audio {i+1} was not generated', flush=True)
+                          return
                       print(f'Audio {i+1}: {slide["duration"]:.1f}s', flush=True)
               await asyncio.gather(*(one(i, slide) for i, slide in enumerate(data)))
               (root/'slides.json').write_text(json.dumps(data, ensure_ascii=False, indent=2))
           asyncio.run(generate())
           print('Audio ready:', sum('duration' in s for s in data), '/', len(data))
+          if not all('duration' in s for s in data):
+              raise SystemExit('Incomplete narration; previous site kept intact')
           PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: narrated-site
+          path: public
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
