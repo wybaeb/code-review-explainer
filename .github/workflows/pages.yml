@@ -1,0 +1,57 @@
+name: Publish explainer
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare Microsoft narration
+        run: |
+          python -m pip install --quiet 'git+https://github.com/rany2/edge-tts.git'
+          python - <<'PY'
+          import asyncio, json, subprocess
+          from pathlib import Path
+          import edge_tts
+          root = Path('public')
+          data = json.loads((root/'slides.json').read_text())
+          (root/'audio').mkdir(exist_ok=True)
+          async def generate():
+              for i, slide in enumerate(data):
+                  dest = root/f'audio/{i+1:02}.mp3'
+                  if dest.exists() and dest.stat().st_size > 5000:
+                      continue
+                  try:
+                      await edge_tts.Communicate(slide['narration'], 'ru-RU-SvetlanaNeural', rate='-5%').save(str(dest))
+                      duration = subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',str(dest)])
+                      slide['duration'] = float(duration)
+                      print(f'Audio {i+1}: {slide["duration"]:.1f}s', flush=True)
+                  except Exception as error:
+                      print(f'::warning::Microsoft audio unavailable: {type(error).__name__}. Publishing explicitly labelled preview.', flush=True)
+                      break
+              (root/'slides.json').write_text(json.dumps(data, ensure_ascii=False, indent=2))
+          asyncio.run(generate())
+          print('Audio ready:', sum('duration' in s for s in data), '/', len(data))
+          PY
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - uses: actions/deploy-pages@v4
+        id: deployment
